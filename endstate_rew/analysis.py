@@ -1,17 +1,22 @@
 from curses import keyname
 import glob
 import pickle
+import os
+from os import path
 from collections import namedtuple
 from typing import NamedTuple, Tuple
 
 import matplotlib.pyplot as plt
+from matplotlib.ticker import FormatStrFormatter
 import numpy as np
 import seaborn as sns
 from openmm import unit
 from pymbar import BAR, EXP
 from tqdm import tqdm
+import mdtraj as md
 
-from endstate_rew.constant import kBT
+from endstate_rew.constant import kBT, zinc_systems
+from endstate_rew.system import generate_molecule
 
 
 def _collect_equ_samples(
@@ -91,7 +96,7 @@ def calculate_u_kn(
             raise FileNotFoundError
         print(f"trying to load: {path}/mbar_{every_nth_frame}.pickle")
         N_k, u_kn = pickle.load(open(f"{path}/mbar_{every_nth_frame}.pickle", "rb"))
-        print(f"Reusing pregenerated mbar object: {path}/mbar.pickle")
+        print(f"Reusing pregenerated mbar object: {path}/mbar_{every_nth_frame}.pickle")
     except FileNotFoundError:
 
         # generate molecule
@@ -154,7 +159,7 @@ def plot_overlap_for_equilibrium_free_energy(
         annot_kws={"size": "small"},
     )
     plt.title(f"Free energy estimate for {name}", fontsize=15)
-    plt.savefig(f"{name}_equilibrium_free_energy.png")
+    plt.savefig(f"{name}_equilibrium_free_energy_overlap.png")
     plt.show()
     plt.close()
 
@@ -441,3 +446,244 @@ def plot_resutls_of_switching_experiments(name: str, results: NamedTuple):
     plt.tight_layout()
     plt.savefig(f"{name}_r_10ps.png")
     plt.show()
+
+
+############################################################### TORSION PROFILES #####################################################################################
+
+# get trajectory instance
+def get_traj(samples: str, name: str, ff: str):
+    from glob import glob
+
+    # depending on endstate, get correct label
+    if samples == "mm":
+        endstate = "0.0000"
+    elif samples == "qml":
+        endstate = "1.0000"
+
+    # get pickle files for traj
+    globals()["pickle_file_%s" % samples] = glob(
+        f"/data/shared/projects/endstate_rew/{name}/sampling_{ff}/run*/{name}_samples_5000_steps_1000_lamb_{endstate}.pickle"
+    )
+
+    # check if pickle file for system exists
+    for run in globals()["pickle_file_%s" % samples]:
+
+        if path.isfile(run):
+            # load traj
+            coordinates = []
+
+            for run in globals()["pickle_file_%s" % samples]:
+                # remove first 1k samples
+                coord = pickle.load(open(run, "rb"))
+                coordinates.extend(coord[1000:])
+
+            # load topology from pdb file
+            top = md.load("mol.pdb").topology
+
+            # NOTE: the reason why this function needs a smiles string is because it
+            # has to generate a pdb file from which mdtraj reads the topology
+            # this is not very elegant # FIXME: try to load topology directly
+
+            # generate trajectory instance
+            globals()["traj_%s" % samples] = md.Trajectory(
+                xyz=coordinates, topology=top
+            )
+            return globals()["traj_%s" % samples]
+
+        else:
+
+            print(f"No pickle file found for {samples} samples")
+
+
+# get indices of four atoms defining the torsion
+def get_indices(rot_bond, rot_bond_list: list, bonds: list):
+
+    print(f"---------- Investigating bond nr {rot_bond} ----------")
+
+    # get indices of both atoms forming an rotatable bond
+    atom_1_idx = (rot_bond_list[rot_bond]).atom1_index
+    atom_2_idx = (rot_bond_list[rot_bond]).atom2_index
+
+    # create lists to collect neighbors of atom_1 and atom_2
+    neighbors1 = []
+    neighbors2 = []
+
+    # find neighbors of atoms forming the rotatable bond and add to index list (if heavy atom torsion)
+    for bond in bonds:
+
+        # get neighbors of atom_1 (of rotatable bond)
+        # check, if atom_1 (of rotatable bond) is the first atom in the current bond
+        if bond.atom1_index == atom_1_idx:
+
+            # make sure, that neighboring atom is not an hydrogen, nor atom_2
+            if (
+                not bond.atom2.element.name == "hydrogen"
+                and not bond.atom2_index == atom_2_idx
+            ):
+                neighbors1.append(bond.atom2_index)
+
+        # check, if atom_1 (of rotatable bond) is the second atom in the current bond
+        elif bond.atom2_index == atom_1_idx:
+
+            # make sure, that neighboring atom is not an hydrogen, nor atom_2
+            if (
+                not bond.atom1.element.name == "hydrogen"
+                and not bond.atom1_index == atom_2_idx
+            ):
+                neighbors1.append(bond.atom1_index)
+
+        # get neighbors of atom_2 (of rotatable bond)
+        # check, if atom_2 (of rotatable bond) is the first atom in the current bond
+        if bond.atom1_index == atom_2_idx:
+
+            # make sure, that neighboring atom is not an hydrogen, nor atom_1
+            if (
+                not bond.atom2.element.name == "hydrogen"
+                and not bond.atom2_index == atom_1_idx
+            ):
+                neighbors2.append(bond.atom2_index)
+
+        # check, if atom_2 (of rotatable bond) is the second atom in the current bond
+        elif bond.atom2_index == atom_2_idx:
+
+            # make sure, that neighboring atom is not an hydrogen, nor atom_1
+            if (
+                not bond.atom1.element.name == "hydrogen"
+                and not bond.atom1_index == atom_1_idx
+            ):
+                neighbors2.append(bond.atom1_index)
+
+    # check, if both atoms forming the rotatable bond have neighbors
+    if len(neighbors1) > 0 and len(neighbors2) > 0:
+
+        # list for final atom indices defining torsion
+        indices = [[atom_1_idx, neighbors1[0], neighbors2[0], atom_2_idx]]
+        return indices
+
+    else:
+
+        print(f"No heavy atom torsions found for bond {rot_bond}")
+        indices = []
+        return indices
+
+
+# generate torsion profile plots
+def vis_torsions(zinc_id: int, ff: str):
+    ############################################ LOAD MOLECULE AND GET BOND INFO ##########################################################################################
+
+    # get zinc_id(name of the zinc system) and smiles
+    name, smiles = zinc_systems[zinc_id]
+
+    print(
+        f"################################## SYSTEM {name} ##################################"
+    )
+
+    # generate mol from smiles string
+    mol = generate_molecule(forcefield=ff, name=name, base="../data/hipen_data")
+
+    # write mol as pdb
+    mol.to_file("mol.pdb", file_format="pdb")
+
+    # get all bonds
+    bonds = mol.bonds
+
+    # get all rotatable bonds
+    rot_bond_list = mol.find_rotatable_bonds()
+    print(len(rot_bond_list), "rotatable bonds found.")
+
+    ################################################## GET HEAVY ATOM TORSIONS ##########################################################################################
+
+    # create list for collecting bond nr, which have heavy atom torsion profile
+    torsions = []
+
+    for rot_bond in range(len(rot_bond_list)):
+
+        # get atom indices of all rotatable bonds
+        indices = get_indices(
+            rot_bond=rot_bond, rot_bond_list=rot_bond_list, bonds=bonds
+        )
+
+        # compute dihedrals only if heavy atom torsion was found for rotatable bond
+        if len(indices) > 0:
+            print(f"Dihedrals are computed for bond nr {rot_bond}")
+            # add bond nr to list
+            torsions.append(rot_bond)
+            globals()["data_mm_%s" % rot_bond] = (
+                md.compute_dihedrals(
+                    get_traj(samples="mm", name=name, ff=ff),
+                    indices,
+                    periodic=True,
+                    opt=True,
+                )
+                * 180.0
+                / np.pi
+            )
+            globals()["data_qml_%s" % rot_bond] = (
+                md.compute_dihedrals(
+                    get_traj(samples="qml", name=name, ff=ff),
+                    indices,
+                    periodic=True,
+                    opt=True,
+                )
+                * 180.0
+                / np.pi
+            )
+        else:
+            print(f"No dihedrals will be computed for bond nr {rot_bond}")
+
+    ################################################## PLOT TORSION PROFILES ##########################################################################################
+
+    # plot if only one heavy atom torsion profile is detected
+    if len(torsions) == 1:
+
+        plt.subplots(figsize=(12, 7), dpi=600)
+        plt.subplots_adjust(hspace=0.8)
+
+        ax = sns.histplot(
+            # ax = axs[counter],
+            data={
+                "mm samples": globals()["data_mm_%s" % torsions[0]].squeeze(),
+                "qml samples": globals()["data_qml_%s" % torsions[0]].squeeze(),
+            },
+            bins=100,  # not sure how many bins to use
+            kde=True,
+            alpha=0.5,
+            stat="density",
+        )
+        ax.set(
+            xlabel="Dihedral angle [degrees]",
+            title=f"Torsion profile of {name}\n\n\n rotatable bond {torsions[0]}",
+        )
+        ax.set(xlim=(-180, 180))
+        ax.set_xticks(range(-180, 185, 30))
+        ax.yaxis.set_major_formatter(FormatStrFormatter("%.3f"))
+
+    # several subplots, if multiple heavy atom torsion profiles are detected
+    elif len(torsions) > 1:
+
+        fig, axs = plt.subplots(len(torsions), 1, figsize=(11, 13), dpi=600)
+        plt.subplots_adjust(hspace=0.8)
+        counter = 0
+        fig.suptitle(f"Torsion profile of {name}")
+        for torsion in torsions:
+            axs[counter].set_title(f"rotatable bond {torsion}")
+            sns.histplot(
+                ax=axs[counter],
+                data={
+                    "mm samples": globals()["data_mm_%s" % torsion].squeeze(),
+                    "qml samples": globals()["data_qml_%s" % torsion].squeeze(),
+                },
+                bins=100,  # not sure how many bins to use
+                kde=True,
+                alpha=0.5,
+                stat="density",
+            )
+            axs[counter].set_xlabel("Dihedral angle [degrees]")
+            axs[counter].set(xlim=(-180, 180))
+            axs[counter].set_xticks(range(-180, 185, 30))
+            axs[counter].yaxis.set_major_formatter(FormatStrFormatter("%.3f"))
+            counter += 1
+
+    if not path.isdir(f"torsion_profiles_{ff}"):
+        os.makedirs(f"torsion_profiles_{ff}")
+    plt.savefig(f"torsion_profiles_{ff}/{name}_{ff}.png")
