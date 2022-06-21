@@ -8,8 +8,10 @@ from typing import NamedTuple, Tuple
 
 import matplotlib.pyplot as plt
 from matplotlib.ticker import FormatStrFormatter
+import matplotlib.image as mpimg
 import numpy as np
 import seaborn as sns
+import seaborn_image as isns
 from openmm import unit
 from pymbar import BAR, EXP
 from tqdm import tqdm
@@ -450,6 +452,50 @@ def plot_resutls_of_switching_experiments(name: str, results: NamedTuple):
 
 ############################################################### TORSION PROFILES #####################################################################################
 
+# save a png file of the molecule with atom indices
+def save_mol_pic(zinc_id: str, ff: str):
+
+    from rdkit import Chem
+    from rdkit.Chem import AllChem
+    from rdkit.Chem.Draw import IPythonConsole
+    from rdkit.Chem import Draw
+    from rdkit.Chem.Draw import rdMolDraw2D
+
+    IPythonConsole.drawOptions.addAtomIndices = True
+
+    name, smiles = zinc_systems[zinc_id]
+    # generate openff Molecule
+    mol = generate_molecule(name=name, forcefield=ff, base="../data/hipen_data")
+    # convert openff object to rdkit mol object
+    mol_rd = mol.to_rdkit()
+
+    # remove explicit H atoms
+    if zinc_id == 4:
+        # NOTE: FIXME: this is a temporary workaround to fix the wrong indexing in rdkit
+        # when using the RemoveHs() function
+        mol_draw = Chem.RWMol(mol_rd)
+        # remove all explicit H atoms, except the ones on the ring (for correct indexing)
+        for run in range(1, 13):
+            n_atoms = mol_draw.GetNumAtoms()
+            mol_draw.RemoveAtom(n_atoms - 1)
+    else:
+        # remove explicit H atoms
+        mol_draw = Chem.RemoveHs(mol_rd)
+
+    # get 2D representation
+    AllChem.Compute2DCoords(mol_draw)
+    # formatting
+    d = rdMolDraw2D.MolDraw2DCairo(1500, 1000)
+    d.drawOptions().fixedFontSize = 90
+    d.drawOptions().fixedBondLength = 110
+    d.drawOptions().annotationFontScale = 0.7
+    d.drawOptions().addAtomIndices = True
+
+    d.DrawMolecule(mol_draw)
+    d.FinishDrawing()
+    d.WriteDrawingText(f"{name}_{ff}.png")
+
+
 # get trajectory instance
 def get_traj(samples: str, name: str, ff: str):
     from glob import glob
@@ -465,34 +511,35 @@ def get_traj(samples: str, name: str, ff: str):
         f"/data/shared/projects/endstate_rew/{name}/sampling_{ff}/run*/{name}_samples_5000_steps_1000_lamb_{endstate}.pickle"
     )
 
-    # check if pickle file for system exists
-    for run in globals()["pickle_file_%s" % samples]:
+    # list for collecting sampling data
+    coordinates = []
 
-        if path.isfile(run):
-            # load traj
-            coordinates = []
+    # generate traj instance only if at least one pickle file exists
+    if not len(globals()["pickle_file_%s" % samples]) == 0:
+        for run in globals()["pickle_file_%s" % samples]:
 
-            for run in globals()["pickle_file_%s" % samples]:
+            # load pickle file
+            coord = pickle.load(open(run, "rb"))
+            # check, if sampling data is complete (MODIFY IF NR OF SAMPLING STEPS != 5000)
+            if len(coord) == 5000:
+
                 # remove first 1k samples
-                coord = pickle.load(open(run, "rb"))
                 coordinates.extend(coord[1000:])
 
-            # load topology from pdb file
-            top = md.load("mol.pdb").topology
+                # load topology from pdb file
+                top = md.load("mol.pdb").topology
 
-            # NOTE: the reason why this function needs a smiles string is because it
-            # has to generate a pdb file from which mdtraj reads the topology
-            # this is not very elegant # FIXME: try to load topology directly
+                # NOTE: the reason why this function needs a smiles string is because it
+                # has to generate a pdb file from which mdtraj reads the topology
+                # this is not very elegant # FIXME: try to load topology directly
 
-            # generate trajectory instance
-            globals()["traj_%s" % samples] = md.Trajectory(
-                xyz=coordinates, topology=top
-            )
-            return globals()["traj_%s" % samples]
-
-        else:
-
-            print(f"No pickle file found for {samples} samples")
+                # generate trajectory instance
+                globals()["traj_%s" % samples] = md.Trajectory(
+                    xyz=coordinates, topology=top
+                )
+                return globals()["traj_%s" % samples]
+            else:
+                print(f"{run} file contains incomplete sampling data")
 
 
 # get indices of four atoms defining the torsion
@@ -557,7 +604,7 @@ def get_indices(rot_bond, rot_bond_list: list, bonds: list):
     if len(neighbors1) > 0 and len(neighbors2) > 0:
 
         # list for final atom indices defining torsion
-        indices = [[atom_1_idx, neighbors1[0], neighbors2[0], atom_2_idx]]
+        indices = [[neighbors1[0], atom_1_idx, atom_2_idx, neighbors2[0]]]
         return indices
 
     else:
@@ -595,6 +642,8 @@ def vis_torsions(zinc_id: int, ff: str):
 
     # create list for collecting bond nr, which have heavy atom torsion profile
     torsions = []
+    all_indices = []
+    plotting = False
 
     for rot_bond in range(len(rot_bond_list)):
 
@@ -608,65 +657,67 @@ def vis_torsions(zinc_id: int, ff: str):
             print(f"Dihedrals are computed for bond nr {rot_bond}")
             # add bond nr to list
             torsions.append(rot_bond)
-            globals()["data_mm_%s" % rot_bond] = (
-                md.compute_dihedrals(
-                    get_traj(samples="mm", name=name, ff=ff),
+            all_indices.extend(indices)
+
+            # check if traj data can be retrieved
+            globals()["traj_mm_%s" % rot_bond] = get_traj(
+                samples="mm", name=name, ff=ff
+            )
+            globals()["traj_qml_%s" % rot_bond] = get_traj(
+                samples="qml", name=name, ff=ff
+            )
+
+            if (
+                globals()["traj_mm_%s" % rot_bond]
+                and globals()["traj_qml_%s" % rot_bond]
+            ):
+                globals()["data_mm_%s" % rot_bond] = md.compute_dihedrals(
+                    globals()["traj_mm_%s" % rot_bond], indices, periodic=True, opt=True
+                )  # * 180.0 / np.pi
+                globals()["data_qml_%s" % rot_bond] = md.compute_dihedrals(
+                    globals()["traj_qml_%s" % rot_bond],
                     indices,
                     periodic=True,
                     opt=True,
-                )
-                * 180.0
-                / np.pi
-            )
-            globals()["data_qml_%s" % rot_bond] = (
-                md.compute_dihedrals(
-                    get_traj(samples="qml", name=name, ff=ff),
-                    indices,
-                    periodic=True,
-                    opt=True,
-                )
-                * 180.0
-                / np.pi
-            )
+                )  # * 180.0 / np.pi
+                plotting = True
+            else:
+                print(f"Trajectory data cannot be found for {name}")
         else:
             print(f"No dihedrals will be computed for bond nr {rot_bond}")
 
     ################################################## PLOT TORSION PROFILES ##########################################################################################
 
-    # plot if only one heavy atom torsion profile is detected
-    if len(torsions) == 1:
+    if plotting:
+        # generate molecule picture
+        save_mol_pic(zinc_id=zinc_id, ff=ff)
 
-        plt.subplots(figsize=(12, 7), dpi=600)
-        plt.subplots_adjust(hspace=0.8)
-
-        ax = sns.histplot(
-            # ax = axs[counter],
-            data={
-                "mm samples": globals()["data_mm_%s" % torsions[0]].squeeze(),
-                "qml samples": globals()["data_qml_%s" % torsions[0]].squeeze(),
-            },
-            bins=100,  # not sure how many bins to use
-            kde=True,
-            alpha=0.5,
-            stat="density",
-        )
-        ax.set(
-            xlabel="Dihedral angle [degrees]",
-            title=f"Torsion profile of {name}\n\n\n rotatable bond {torsions[0]}",
-        )
-        ax.set(xlim=(-180, 180))
-        ax.set_xticks(range(-180, 185, 30))
-        ax.yaxis.set_major_formatter(FormatStrFormatter("%.3f"))
-
-    # several subplots, if multiple heavy atom torsion profiles are detected
-    elif len(torsions) > 1:
-
-        fig, axs = plt.subplots(len(torsions), 1, figsize=(11, 13), dpi=600)
-        plt.subplots_adjust(hspace=0.8)
+        # counter for addressing axis
         counter = 0
-        fig.suptitle(f"Torsion profile of {name}")
+
+        # create corresponding nr of subplots
+        fig, axs = plt.subplots(
+            len(torsions) + 1, 1, figsize=(8, len(torsions) * 2 + 6), dpi=400
+        )
+        fig.suptitle(f"Torsion profile of {name} ({ff})", fontsize=13, weight="bold")
+
+        # flip the image, so it is displayed correctly
+        image = np.flipud(mpimg.imread(f"{name}_{ff}.png"))
+
+        # plot the molecule image on the first axis
+        axs[0].imshow(image)
+        axs[0].axis("off")
+
+        # set counter to 1
+        counter += 1
+        # counter for atom indices
+        idx_counter = 0
+
+        # iterate over all torsions and plot results
         for torsion in torsions:
-            axs[counter].set_title(f"rotatable bond {torsion}")
+            # add atom indices as plot title
+            axs[counter].set_title(f"Torsion {all_indices[idx_counter]}")
+            # sns.set(font_scale = 2)
             sns.histplot(
                 ax=axs[counter],
                 data={
@@ -678,12 +729,21 @@ def vis_torsions(zinc_id: int, ff: str):
                 alpha=0.5,
                 stat="density",
             )
-            axs[counter].set_xlabel("Dihedral angle [degrees]")
-            axs[counter].set(xlim=(-180, 180))
-            axs[counter].set_xticks(range(-180, 185, 30))
+            # adjust axis labelling
+            unit = np.arange(-np.pi, np.pi + np.pi / 4, step=(1 / 4 * np.pi))
+            axs[counter].set(xlim=(-np.pi, np.pi))
+            axs[counter].set_xticks(
+                unit, ["-π", "-3π/4", "-π/2", "-π/4", "0", "π/4", "π/2", "3π/4", "π"]
+            )
             axs[counter].yaxis.set_major_formatter(FormatStrFormatter("%.3f"))
             counter += 1
+            idx_counter += 1
+        axs[-1].set_xlabel("Dihedral angle")
 
-    if not path.isdir(f"torsion_profiles_{ff}"):
-        os.makedirs(f"torsion_profiles_{ff}")
-    plt.savefig(f"torsion_profiles_{ff}/{name}_{ff}.png")
+        plt.tight_layout()
+
+        if not path.isdir(f"torsion_profiles_{ff}"):
+            os.makedirs(f"torsion_profiles_{ff}")
+        plt.savefig(f"torsion_profiles_{ff}/{name}_{ff}.png")
+    else:
+        print(f"No torsion profile can be generated for {name}")
