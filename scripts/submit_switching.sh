@@ -8,6 +8,6 @@
 #$ -cwd
 
 . /data/shared/software/python_env/anaconda3/etc/profile.d/conda.sh
-conda activate reweighting
+conda activate rew
 
-python switching_parallel.py $1 $2
+python switching.py $1 # zink_id

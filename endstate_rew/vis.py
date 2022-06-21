@@ -16,7 +16,7 @@ def visualize_mol(smiles: str, forcefield: str, pickle_file: str):
         _type_: nglview view instance
     """
     # generate mol from file
-    m = generate_molecule(forcefield=forcefield, smiles=smiles, base="data/hipen_data")
+    m = generate_molecule(forcefield=forcefield, smiles=smiles)
     # write mol as pdb
     m.to_file("m.pdb", file_format="pdb")
     # load traj

@@ -29,7 +29,7 @@ else:
     name = "2cle"
     smiles = "ClCCOCCCl"
 ###################
-ff = "openff"  # charmmff
+ff = "charmmff" #"openff" #"charmmff"  # openff
 n_samples = 5_000
 n_steps_per_sample = 1_000
 n_lambdas = 11
@@ -54,7 +54,7 @@ assert lambs[-1] == 1.0
 if ff == "openff" and smiles:
     molecule = generate_molecule(forcefield=ff, smiles=smiles)
 elif ff == "charmmff" and smiles:
-    molecule = generate_molecule(forcefield=ff, name=name, base="../data/hipen_data")
+    molecule = generate_molecule(forcefield=ff, name=name)
 else:
     raise RuntimeError("Only openff can be used with SMILES input")
 # initialize working directory
@@ -71,13 +71,12 @@ print(f"select conf_id: {conf_id}")
 if ff == "openff":
     sim = initialize_simulation_with_openff(
         molecule,
-        platform=platform,
         w_dir=f"/data/shared/projects/endstate_rew/{name}/",
         conf_id=conf_id,
     )
 elif ff == "charmmff":
     sim = initialize_simulation_with_charmmff(
-        molecule, zinc_id=name, platform=platform, conf_id=conf_id
+        molecule, zinc_id=name, conf_id=conf_id
     )
 else:
     raise RuntimeError("Either openff or charmmff. Abort.")

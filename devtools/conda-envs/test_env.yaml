@@ -8,12 +8,15 @@ dependencies:
   - pip
 
   - openmm
-  - torchani
   - openmm-torch
   - openff-toolkit
   - openmmtools
+#  - nnpops
+#  - cudatoolkit=11.3
   - tqdm
   - pymbar
+  - torchani
+  - seaborn
 
     # Testing
   - pytest

@@ -9,7 +9,7 @@ Endstate reweighting from MM to QML potential
 
 ### Copyright
 
-Copyright (c) 2022, Marcus Wieder
+Copyright (c) 2022, Marcus Wieder & Sara Tkaczyk
 
 
 #### Acknowledgements

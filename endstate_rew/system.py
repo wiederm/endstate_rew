@@ -25,14 +25,12 @@ from endstate_rew.constant import (
     zinc_systems,
 )
 
-forcefield = ForceField("openff_unconstrained-2.0.0.offxml")
-
 
 def generate_molecule(
     forcefield: str,
     name: str = "",
     smiles: str = "",
-    base: str = "../data/hipen_data",
+    base: str = "",
     nr_of_conformations: int = 10,
 ) -> Molecule:
 
@@ -77,6 +75,9 @@ def generate_molecule(
             )
 
     elif forcefield == "charmmff":
+
+        if not base:
+            base = _get_hipen_data()
 
         # if smiles string is not provided but zinc name is
         if not smiles and name:
@@ -157,8 +158,10 @@ def generate_samples(sim, n_samples: int = 1_000, n_steps_per_sample: int = 10_0
     return samples
 
 
-def create_mm_system(molecule):
+def create_openff_system(molecule):
     """given a molecule it creates an openMM system and topology instance"""
+
+    forcefield = ForceField("openff_unconstrained-2.0.0.offxml")
     topology = molecule.to_topology()
     system = forcefield.create_openmm_system(topology)
     return system, topology
@@ -189,17 +192,25 @@ def _seed_velocities(masses: np.array) -> np.ndarray:
 
 
 def _initialize_simulation(
-    at_endstate: str, topology, potential, molecule, conf_id: int, platform, system
+    at_endstate: str, topology, potential, molecule, conf_id: int, system
 ):
     # define integrator
     integrator = mm.LangevinIntegrator(temperature, collision_rate, stepsize)
+    from endstate_rew.constant import check_implementation
+
+    implementation, platform = check_implementation()
+
     platform = mm.Platform.getPlatformByName(platform)
 
     # define the atoms that are calculated using both potentials
     if not at_endstate:
         ml_atoms = [atom.index for atom in topology.atoms()]
         ml_system = potential.createMixedSystem(
-            topology, system, ml_atoms, interpolate=True
+            topology,
+            system,
+            ml_atoms,
+            interpolate=True,
+            implementation=implementation,
         )
         sim = Simulation(topology, ml_system, integrator, platform=platform)
     elif at_endstate.upper() == "QML":
@@ -215,24 +226,28 @@ def _initialize_simulation(
         )
         sim = Simulation(topology, system, integrator, platform=platform)
         print("Initializing MM system")
+    else:
+        raise NotImplementedError()
 
     sim.context.setPositions(molecule.conformers[conf_id])
     # NOTE: FIXME: minimizing the energy of the interpolating potential leeds to very high energies,
     # for now avoiding call to minimizer
-    # sim.minimizeEnergy(maxIterations=100)
-
+    print("Minimizing ...")
+    u_1 = sim.context.getState(getEnergy=True).getPotentialEnergy()
+    sim.minimizeEnergy(maxIterations=100)
+    u_2 = sim.context.getState(getEnergy=True).getPotentialEnergy()
+    print(f"before min: {u_1}; after min: {u_2}")
     # NOTE: FIXME: velocities are seeded manually right now (otherwise pytorch error) --
     # this will be fiexed in the future
     # revert back to openMM velovity call
-    # sim.context.setVelocitiesToTemperature(temperature)
-    sim.context.setVelocities(_seed_velocities(_get_masses(system)))
+    sim.context.setVelocitiesToTemperature(temperature)
+    # sim.context.setVelocities(_seed_velocities(_get_masses(system)))
     return sim
 
 
 def initialize_simulation_with_openff(
     molecule: Molecule,
     at_endstate: str = "",
-    platform: str = "CPU",
     w_dir="",
     conf_id: int = 0,
 ):
@@ -252,6 +267,7 @@ def initialize_simulation_with_openff(
     # initialize potential
     potential = MLPotential("ani2x")
     # initialize openMM system and topology
+    print(w_dir)
     if w_dir:
         mol_path = f"{w_dir}/system.openff"
         if path.isfile(mol_path):  # if already generated, load it
@@ -259,10 +275,10 @@ def initialize_simulation_with_openff(
             system, topology = pickle.load(open(mol_path, "rb"))
         else:  # if not generated, generate it and save it
             print("generate and save system ...")
-            system, topology = create_mm_system(molecule)
+            system, topology = create_openff_system(molecule)
             pickle.dump((system, topology), open(mol_path, "wb+"))
     else:
-        system, topology = create_mm_system(molecule)
+        system, topology = create_openff_system(molecule)
 
     return _initialize_simulation(
         at_endstate,
@@ -270,13 +286,23 @@ def initialize_simulation_with_openff(
         potential,
         molecule,
         conf_id,
-        platform,
         system,
     )
 
 
+def _get_hipen_data():
+    import pathlib
+    import endstate_rew as end
+
+    path = pathlib.Path(end.__file__).resolve().parent
+    return f"{path}/data/hipen_data"
+
+
 # creating charmm systems from zinc data
-def create_charmm_system(name: str, base="../data/hipen_data"):
+def create_charmm_system(name: str, base=""):
+
+    if not base:
+        base = _get_hipen_data()
 
     # check if input directory exists
     if not path.isdir(base):
@@ -304,16 +330,15 @@ def create_charmm_system(name: str, base="../data/hipen_data"):
 def initialize_simulation_with_charmmff(
     molecule: Molecule,
     zinc_id: str,
-    base: str = "../data/hipen_data",
+    base: str = "",
     at_endstate: str = "",
-    platform: str = "CPU",
     conf_id: int = 0,
 ):
     """Initialize a simulation instance
 
     Args:
         zinc_id (str): _description_
-        base (str, optional): _description_. Defaults to '../data/hipen_data'
+        base (str, optional): _description_.
         at_endstate (str, optional): _description_. Defaults to ''.
         platform (str, optional): _description_. Defaults to 'CPU'.
 
@@ -322,11 +347,14 @@ def initialize_simulation_with_charmmff(
     """
     assert molecule.n_conformers > 0
 
+    if not base:
+        base = _get_hipen_data()
+
     # initialize potential
     potential = MLPotential("ani2x")
     # generate the charmm system
     system, topology = create_charmm_system(zinc_id, base)
 
     return _initialize_simulation(
-        at_endstate, topology, potential, molecule, conf_id, platform, system
+        at_endstate, topology, potential, molecule, conf_id, system
     )
