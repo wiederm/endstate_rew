@@ -76,3 +76,40 @@ def calculate_u_kn(
     assert total_nr_of_samples > 20  # make sure that there are samples present
 
     return (N_k, u_kn)
+
+
+def generate_samples(sim, n_samples: int = 1_000, n_steps_per_sample: int = 10_000):
+    """generate samples using a defined system"""
+    from endstate_correction.system import get_positions
+
+    print(f"Generate samples with mixed System: {n_samples=}, {n_steps_per_sample=}")
+    samples = []
+    for _ in tqdm(range(n_samples)):
+        sim.step(n_steps_per_sample)
+        samples.append(get_positions(sim))
+    return samples
+
+
+def _get_masses(system) -> np.array:
+    return (
+        np.array(
+            [
+                system.getParticleMass(atom_idx) / unit.dalton
+                for atom_idx in range(system.getNumParticles())
+            ]
+        )
+        * unit.daltons
+    )
+
+
+def _seed_velocities(masses: np.array) -> np.ndarray:
+    from endstate_correction.constant import speed_unit
+
+    # should only take
+    # sim.context.setVelocitiesToTemperature(temperature)
+    # but currently this returns a pytorch error
+    # instead seed manually from boltzmann distribution
+
+    sigma_v = np.array([unit.sqrt(kBT / m) / speed_unit for m in masses]) * speed_unit
+
+    return np.random.randn(len(sigma_v), 3) * sigma_v[:, None]
