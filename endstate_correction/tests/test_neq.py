@@ -11,7 +11,7 @@ from openmm.app import Simulation
 
 def test_collect_work_values():
     """test if we are able to collect samples as anticipated"""
-    from endstate_correction.analysis import _collect_work_values
+    from endstate_correction.neq import _collect_work_values
 
     nr_of_switches = 200
     path = f"data/ZINC00077329/switching_charmmff/ZINC00077329_neq_ws_from_mm_to_qml_{nr_of_switches}_5001.pickle"
@@ -81,7 +81,7 @@ def test_switching():
         sim, lambdas=lambs, samples=samples_mm[:1], nr_of_switches=1
     )
     assert np.isclose(
-        dE_list[0].value_in_unit(unit.kilojoule_per_mole), -5898579.579181526
+        dE_list[0].value_in_unit(unit.kilojoule_per_mole), -2345981.1035673507
     )
     lambs = np.linspace(1, 0, 2)
 
@@ -91,7 +91,7 @@ def test_switching():
     print(dE_list)
 
     assert np.isclose(
-        dE_list[0].value_in_unit(unit.kilojoule_per_mole), 5898579.579181526
+        dE_list[0].value_in_unit(unit.kilojoule_per_mole), 2345981.1035673507
     )
 
     # perform NEQ switching

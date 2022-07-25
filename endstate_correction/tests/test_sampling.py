@@ -18,10 +18,10 @@ jctc_testsystem = f"{path}/data/jctc_data"
 def test_sampling():
     """Test if we can sample with simulation instance in vacuum and watervox"""
     from endstate_correction.system import (
-        generate_samples,
         create_charmm_system,
         read_box,
     )
+    from endstate_correction.equ import generate_samples
 
     ########################################################
     ########################################################
