@@ -3,12 +3,14 @@ import json
 
 import openmm as mm
 from openmm import unit
-from openmm.app import (PME, CharmmParameterSet, CharmmPsfFile, NoCutoff,
-                        Simulation)
+from openmm.app import PME, CharmmParameterSet, CharmmPsfFile, NoCutoff, Simulation
 from openmmml import MLPotential
-from tqdm import tqdm
-
-from endstate_correction.constant import collision_rate, stepsize, temperature
+from endstate_correction.constant import (
+    collision_rate,
+    stepsize,
+    temperature,
+    check_implementation,
+)
 
 
 def read_box(psf, filename: str):
@@ -40,7 +42,7 @@ def create_charmm_system(
     assert env in ("waterbox", "vacuum", "complex")
     potential = MLPotential("ani2x")
     ff = "charmmff"
-    platform = "CUDA"
+    implementation, platform = check_implementation()
     ###################
     print(f"{ff=}")
     print(f"{platform=}")
@@ -78,14 +80,3 @@ def get_positions(sim):
 def get_energy(sim):
     """get energy of system in a state"""
     return sim.context.getState(getEnergy=True).getPotentialEnergy()
-
-
-def generate_samples(sim, n_samples: int = 1_000, n_steps_per_sample: int = 10_000):
-    """generate samples using a defined system"""
-
-    print(f"Generate samples with mixed System: {n_samples=}, {n_steps_per_sample=}")
-    samples = []
-    for _ in tqdm(range(n_samples)):
-        sim.step(n_steps_per_sample)
-        samples.append(get_positions(sim))
-    return samples
